@@ -1,0 +1,37 @@
+name: Docker
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Build Docker image
+      run: docker build -t gmtsar:test .
+
+    - name: Smoke test CLI tools
+      run: |
+        # Each tool prints a usage message and exits non-zero when called
+        # without arguments, so we just check that the expected output
+        # appears (exit code is ignored with ||true).
+        docker run --rm gmtsar:test esarp 2>&1       | grep -q "esarp"
+        docker run --rm gmtsar:test phasediff 2>&1   | grep -q "phasediff"
+        docker run --rm gmtsar:test gmt --version
+
+    - name: Verify gmtsar_sharedir.csh
+      run: docker run --rm gmtsar:test gmtsar_sharedir.csh
