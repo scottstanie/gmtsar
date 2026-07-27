@@ -45,16 +45,23 @@ def _iono_py_enabled():
     return os.environ.get("GMTSAR_IONO_PY", "1") != "0"
 
 
-def _call_snaphu(threshold, defomax, near_interp):
+def _call_snaphu(threshold, defomax, near_interp, unwrapper=None):
     """Dispatch to native Python snaphu (default) or shell shim (env override).
     Either path is timed under the `snaphu` profiler bucket so phase timings
-    stay comparable across A/B runs."""
+    stay comparable across A/B runs — including a snaphu-vs-whirlwind A/B,
+    where that bucket is the number the 10x claim is measured against.
+
+    `unwrapper` selects the solver backend (`snaphu` / `whirlwind`, see
+    utils/unwrap_backend.py) and is orthogonal to GMTSAR_SNAPHU_PY, which
+    selects the *wrapper* implementation. The legacy shell-shim path has no
+    argument slot for it, so there it comes from $GMTSAR_UNWRAPPER."""
     if _snaphu_py_enabled():
         t0 = time.time()
         try:
             if near_interp == 1:
-                return snaphu_interp_unwrap(threshold, defomax)
-            return snaphu_unwrap(threshold, defomax)
+                return snaphu_interp_unwrap(threshold, defomax,
+                                            unwrapper=unwrapper)
+            return snaphu_unwrap(threshold, defomax, unwrapper=unwrapper)
         finally:
             _BINARY_TIMES.setdefault("snaphu", []).append(time.time() - t0)
     interp_flag = 1 if near_interp == 1 else 0
@@ -742,8 +749,13 @@ def _ensure_landmask(sub):
     file_shuttle("../../topo/landmask_ra.grd", ".", "link")
 
 
-def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax=0):
-    """Phase unwrap via snaphu; threshold_snaphu==0 skips the stage."""
+def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp,
+               defomax=0, unwrapper=None):
+    """Phase unwrap; threshold_snaphu==0 skips the stage.
+
+    `unwrapper` picks the solver backend (`snaphu` default, or `whirlwind`);
+    `threshold_snaphu` keeps its name and meaning under every backend since
+    it gates the GMT-side coherence mask, not the solver."""
     if threshold_snaphu == 0:
         print('P2P 5: SKIP UNWRAP PHASE')
         return
@@ -752,14 +764,15 @@ def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp,
     if mask_water == 1 or switch_land == 1:
         _ensure_landmask(sub)
 
-    print(f'P2P 5: SNAPHU - START, threshold_snaphu={threshold_snaphu}')
+    print(f'P2P 5: UNWRAP - START, threshold_snaphu={threshold_snaphu}, '
+          f'unwrapper={unwrapper or os.environ.get("GMTSAR_UNWRAPPER", "snaphu")}')
     # Native Python snaphu wrappers (utils/snaphu.py), env-gated by
     # GMTSAR_SNAPHU_PY (default ON). Setting GMTSAR_SNAPHU_PY=0 falls back
     # to the legacy `snaphu.py` shell shim. The bare name `snaphu` is the
     # third-party C binary with a different CLI — never call that directly
     # (collision was ALOS_haiti's silent-failure root cause).
-    _call_snaphu(threshold_snaphu, defomax, near_interp)
-    print('P2P 5: SNAPHU - END')
+    _call_snaphu(threshold_snaphu, defomax, near_interp, unwrapper=unwrapper)
+    print('P2P 5: UNWRAP - END')
     os.chdir("../..")
 
 

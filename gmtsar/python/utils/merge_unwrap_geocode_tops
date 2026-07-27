@@ -289,6 +289,9 @@ def merge_unwrap_geocode_tops():
     defomax           = int(_get_config(config, "defomax",      "0") or 0)
     near_interp       = int(_get_config(config, "near_interp",  "0") or 0)
     mask_water        = int(_get_config(config, "mask_water",   "0") or 0)
+    # Solver backend: 'snaphu' (default) or 'whirlwind'. See
+    # utils/unwrap_backend.py. Absent from older configs, hence the default.
+    unwrapper         = _get_config(config, "unwrapper", "snaphu") or "snaphu"
 
     if not region_cut:
         region_cut = _capture("gmt grdinfo phasefilt.grd -I- | cut -c3-20")
@@ -296,7 +299,8 @@ def merge_unwrap_geocode_tops():
     if threshold_snaphu != 0:
         if (mask_water == 1 or switch_land == 1) and not check_file_report("landmask_ra.grd"):
             run(f"landmask {region_cut}")
-        print(f"\nSNAPHU - START (threshold {threshold_snaphu})")
+        print(f"\nUNWRAP - START (threshold {threshold_snaphu}, "
+              f"unwrapper {unwrapper})")
         # Call the Python snaphu entry points directly (Mira #43). The bare
         # `snaphu` CLI on PATH resolves to the C unwrapper binary, not the
         # Python wrapper, so we cannot shell out. The wrappers operate on
@@ -306,10 +310,12 @@ def merge_unwrap_geocode_tops():
         # `$region_cut` being empty (the csh wrappers handle that path).
         region_arg = region_cut if region_cut else None
         if near_interp == 1:
-            snaphu_interp_unwrap(threshold_snaphu, defomax, region=region_arg)
+            snaphu_interp_unwrap(threshold_snaphu, defomax, region=region_arg,
+                                 unwrapper=unwrapper)
         else:
-            snaphu_unwrap(threshold_snaphu, defomax, region=region_arg)
-        print("SNAPHU - END")
+            snaphu_unwrap(threshold_snaphu, defomax, region=region_arg,
+                          unwrapper=unwrapper)
+        print("UNWRAP - END")
     else:
         print("\nSKIP UNWRAP PHASE")
 

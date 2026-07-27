@@ -188,7 +188,13 @@ def p2p_processing(debug):
         correct_iono, iono_filt_rng, iono_filt_azi, \
         iono_dsamp, iono_skip_est, threshold_snaphu, \
         near_interp, mask_water, defomax, threshold_geocode
-    
+
+    # Optional (getattr, not a `from config import`): pre-existing config.py
+    # files predate the backend option and must keep working untouched.
+    # 'snaphu' | 'whirlwind' — see utils/unwrap_backend.py.
+    unwrapper = getattr(config, 'unwrapper', 'snaphu')
+
+
     print('P2P 0: proc_stage   =',proc_stage)
     print('P2P 0: skip_stage   =',skip_stage)
     print('P2P 0: skip_master  =',skip_master)
@@ -213,6 +219,7 @@ def p2p_processing(debug):
     print('P2P 0: near_interp  =',near_interp)
     print('P2P 0: mask_water   =',mask_water)
     print('P2P 0: defomax      =',defomax)
+    print('P2P 0: unwrapper    =',unwrapper)
     print('P2P 0: threshold_geocode', threshold_geocode)
     
     stage = proc_stage
@@ -334,6 +341,9 @@ def p2p_processing(debug):
         "threshold_snaphu": threshold_snaphu,
         "threshold_geocode": threshold_geocode,
         "near_interp": near_interp,
+        # Part of the stage-cache key: switching backends must invalidate a
+        # cached P2P5 sentinel, since the products differ by algorithm.
+        "unwrapper": unwrapper,
     }
 
     if stage == 1 and skip_1 == 0:
@@ -448,7 +458,7 @@ def p2p_processing(debug):
                 print("P2P 5: SKIP (stage-cache hit; sentinel matches inputs)")
             else:
                 with phase("P2P5_unwrap"):
-                    P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax)
+                    P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax, unwrapper)
     if debug==1:
         input('Press Enter to continue to Phase 6...')
 

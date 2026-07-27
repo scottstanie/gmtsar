@@ -1,0 +1,140 @@
+diff --git a/gmtsar/csh/snaphu.csh b/gmtsar/csh/snaphu.csh
+index 6b974eb..1604320 100755
+--- a/gmtsar/csh/snaphu.csh
++++ b/gmtsar/csh/snaphu.csh
+@@ -69,16 +69,62 @@ gmt grdmath mask2_patch.grd corr_patch.grd MUL = corr_tmp.grd
+ gmt grd2xyz phase_patch.grd -ZTLf -do0 > phase.in
+ gmt grd2xyz corr_tmp.grd -ZTLf  -do0 > corr.in
+ #
+-# run snaphu
++# run the unwrapper
++#
++# The solver is selected by $GMTSAR_UNWRAPPER (default snaphu). Both backends
++# read phase.in / corr.in (flat float32, native endian) plus the column count,
++# and write unwrap.out (flat float32) + conncomp.out (flat uint8), so nothing
++# above or below this block changes.
++#
++#   snaphu     the bundled C binary (Chen & Zebker 2000). Default.
++#   whirlwind  github.com/scottstanie/whirlwind-insar -- MCF, ~10x faster.
++#              Prebuilt binaries on the releases page. NOTE: whirlwind has no
++#              DEFOMAX_CYCLE equivalent, so maximum_discontinuity is ignored;
++#              extra flags can be passed via $GMTSAR_WHIRLWIND_ARGS.
+ #
+ set sharedir = `gmtsar_sharedir.csh`
++if ($?GMTSAR_UNWRAPPER == 0) set GMTSAR_UNWRAPPER = "snaphu"
++if ($?GMTSAR_WHIRLWIND_ARGS == 0) set GMTSAR_WHIRLWIND_ARGS = ""
++set width = `gmt grdinfo -C phase_patch.grd | cut -f 10`
++
++if ($GMTSAR_UNWRAPPER == "snaphu") then
++
+ echo "unwrapping phase with snaphu - higher threshold for faster unwrapping "
+ 
+ if ($2 == 0) then
+-  snaphu phase.in `gmt grdinfo -C phase_patch.grd | cut -f 10` -f $sharedir/snaphu/config/snaphu.conf.brief -c corr.in -o unwrap.out -v -s -g conncomp.out
++  snaphu phase.in $width -f $sharedir/snaphu/config/snaphu.conf.brief -c corr.in -o unwrap.out -v -s -g conncomp.out
+ else
+   sed "s/.*DEFOMAX_CYCLE.*/DEFOMAX_CYCLE  $2/g" $sharedir/snaphu/config/snaphu.conf.brief > snaphu.conf.brief
+-  snaphu phase.in `gmt grdinfo -C phase_patch.grd | cut -f 10` -f snaphu.conf.brief -c corr.in -o unwrap.out -v -d -g conncomp.out
++  snaphu phase.in $width -f snaphu.conf.brief -c corr.in -o unwrap.out -v -d -g conncomp.out
++endif
++
++else if ($GMTSAR_UNWRAPPER == "whirlwind") then
++
++echo "unwrapping phase with whirlwind"
++if ($2 != 0) then
++  echo "whirlwind: NOTE: maximum_discontinuity $2 is a snaphu DEFOMAX_CYCLE setting with no whirlwind equivalent; ignoring it."
++endif
++# --nlooks plays the role of snaphu's NCORRLOOKS, so read it from the same file
++# rather than duplicating the constant.
++set nlooks = `grep '^NCORRLOOKS' $sharedir/snaphu/config/snaphu.conf.brief | awk '{print $2}'`
++if ("$nlooks" == "") then
++  echo "whirlwind: ERROR: no NCORRLOOKS line in $sharedir/snaphu/config/snaphu.conf.brief"
++  exit 1
++endif
++# --out-format float and a non-.tif --conncomp path give exactly the layouts
++# the gmt xyz2grd calls below expect (-ZTLf and -ZTLu).
++whirlwind --phase phase.in --cor corr.in --cols $width --nlooks $nlooks \
++    --out unwrap.out --out-format float --conncomp conncomp.out $GMTSAR_WHIRLWIND_ARGS
++if ($status != 0) then
++  echo "whirlwind: ERROR: unwrapping failed"
++  exit 1
++endif
++
++else
++
++echo "ERROR: unknown GMTSAR_UNWRAPPER '$GMTSAR_UNWRAPPER'; expected snaphu or whirlwind"
++exit 1
++
+ endif
+ #
+ # convert to grd
+diff --git a/gmtsar/csh/snaphu_interp.csh b/gmtsar/csh/snaphu_interp.csh
+index a90716c..bb25251 100755
+--- a/gmtsar/csh/snaphu_interp.csh
++++ b/gmtsar/csh/snaphu_interp.csh
+@@ -79,16 +79,62 @@ mv tmp.grd phase_tmp.grd
+ gmt grd2xyz phase_tmp.grd -ZTLf -do0 > phase.in
+ gmt grd2xyz corr_tmp.grd -ZTLf  -do0 > corr.in
+ #
+-# run snaphu
++# run the unwrapper
++#
++# The solver is selected by $GMTSAR_UNWRAPPER (default snaphu). Both backends
++# read phase.in / corr.in (flat float32, native endian) plus the column count,
++# and write unwrap.out (flat float32) + conncomp.out (flat uint8), so nothing
++# above or below this block changes.
++#
++#   snaphu     the bundled C binary (Chen & Zebker 2000). Default.
++#   whirlwind  github.com/scottstanie/whirlwind-insar -- MCF, ~10x faster.
++#              Prebuilt binaries on the releases page. NOTE: whirlwind has no
++#              DEFOMAX_CYCLE equivalent, so maximum_discontinuity is ignored;
++#              extra flags can be passed via $GMTSAR_WHIRLWIND_ARGS.
+ #
+ set sharedir = `gmtsar_sharedir.csh`
++if ($?GMTSAR_UNWRAPPER == 0) set GMTSAR_UNWRAPPER = "snaphu"
++if ($?GMTSAR_WHIRLWIND_ARGS == 0) set GMTSAR_WHIRLWIND_ARGS = ""
++set width = `gmt grdinfo -C phase_patch.grd | cut -f 10`
++
++if ($GMTSAR_UNWRAPPER == "snaphu") then
++
+ echo "unwrapping phase with snaphu - higher threshold for faster unwrapping "
+ 
+ if ($2 == 0) then
+-  snaphu phase.in `gmt grdinfo -C phase_patch.grd | cut -f 10` -f $sharedir/snaphu/config/snaphu.conf.brief -c corr.in -o unwrap.out -v -s -g conncomp.out
++  snaphu phase.in $width -f $sharedir/snaphu/config/snaphu.conf.brief -c corr.in -o unwrap.out -v -s -g conncomp.out
+ else
+   sed "s/.*DEFOMAX_CYCLE.*/DEFOMAX_CYCLE  $2/g" $sharedir/snaphu/config/snaphu.conf.brief > snaphu.conf.brief
+-  snaphu phase.in `gmt grdinfo -C phase_patch.grd | cut -f 10` -f snaphu.conf.brief -c corr.in -o unwrap.out -v -d -g conncomp.out
++  snaphu phase.in $width -f snaphu.conf.brief -c corr.in -o unwrap.out -v -d -g conncomp.out
++endif
++
++else if ($GMTSAR_UNWRAPPER == "whirlwind") then
++
++echo "unwrapping phase with whirlwind"
++if ($2 != 0) then
++  echo "whirlwind: NOTE: maximum_discontinuity $2 is a snaphu DEFOMAX_CYCLE setting with no whirlwind equivalent; ignoring it."
++endif
++# --nlooks plays the role of snaphu's NCORRLOOKS, so read it from the same file
++# rather than duplicating the constant.
++set nlooks = `grep '^NCORRLOOKS' $sharedir/snaphu/config/snaphu.conf.brief | awk '{print $2}'`
++if ("$nlooks" == "") then
++  echo "whirlwind: ERROR: no NCORRLOOKS line in $sharedir/snaphu/config/snaphu.conf.brief"
++  exit 1
++endif
++# --out-format float and a non-.tif --conncomp path give exactly the layouts
++# the gmt xyz2grd calls below expect (-ZTLf and -ZTLu).
++whirlwind --phase phase.in --cor corr.in --cols $width --nlooks $nlooks \
++    --out unwrap.out --out-format float --conncomp conncomp.out $GMTSAR_WHIRLWIND_ARGS
++if ($status != 0) then
++  echo "whirlwind: ERROR: unwrapping failed"
++  exit 1
++endif
++
++else
++
++echo "ERROR: unknown GMTSAR_UNWRAPPER '$GMTSAR_UNWRAPPER'; expected snaphu or whirlwind"
++exit 1
++
+ endif
+ #
+ # convert to grd

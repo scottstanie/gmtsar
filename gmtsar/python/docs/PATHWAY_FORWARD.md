@@ -250,6 +250,22 @@ below is tagged with exactly one:
   default Python path (`utils/snaphu.py`) does I/O/staging only; the
   actual unwrap still calls the C `snaphu` binary. Low priority to unblock
   regardless: snaphu is ~0.3% of pipeline wall-time.
+- **`whirlwind` (alternative unwrapper backend)**: **wired, default OFF,
+  never validated on real data.** Branch `whirlwind-unwrapper`.
+  `utils/unwrap_backend.py` turns the single `snaphu` invocation into a
+  dispatcher; `whirlwind`
+  ([scottstanie/whirlwind-insar](https://github.com/scottstanie/whirlwind-insar),
+  MCF, claimed ~10x faster) reads/writes the same flat float32 +
+  uint8-conncomp layouts, so nothing around the call changed. Selected by
+  `unwrapper` in `config.py` or `$GMTSAR_UNWRAPPER`; unknown names hard-error
+  (rule 1). Unit-tested (`bin_py/tests/test_unwrap_backend.py`, 22 tests
+  incl. an end-to-end byte-layout check against the real binary) but **not
+  run through the sweep** — per rule 13 this is "ported, not blessed". Note
+  this is a *substitution*, not a port: output is not bit-comparable, and
+  `defomax` has no equivalent. Three known behavioural differences and the
+  validation checklist are in `docs/dev_notes/whirlwind_unwrapper.md`; the
+  matching upstream csh change is a patch, not an edit
+  (`docs/dev_notes/whirlwind_csh.patch`).
 
 ## Attempted 2026-07-12: gmt_triangulate_py — the predicted win that wasn't
 

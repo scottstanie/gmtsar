@@ -17,6 +17,13 @@
 # same intermediate filenames, same cleanup. Byte-identical output to the
 # csh side is the success criterion (the unwrap.grd / conncomp.grd / unwrap.pdf
 # triple).
+#
+# The solver itself is no longer hard-coded: the one `snaphu` invocation is
+# dispatched through utils/unwrap_backend.py, which also offers `whirlwind`
+# (github.com/scottstanie/whirlwind-insar, MCF-based, ~10x faster). Everything
+# else in this file — grid prep, masking, xyz round-trip, plotting, cleanup —
+# is backend-independent and unchanged. Selection is `unwrapper` in config.py
+# or $GMTSAR_UNWRAPPER; default `snaphu` keeps byte-identity to csh.
 """
 
 import sys, os, re, configparser
@@ -24,6 +31,7 @@ import subprocess, glob, shutil
 from gmtsar_lib import *
 from grdsample_wrapper import grdsample as _grdsample_inproc
 from xyz2grd_wrapper import xyz2grd_file as _xyz2grd_file
+from unwrap_backend import select_backend, run_unwrapper
 
 # Mira (2026-05-22): in-process gmt grdcut wrapper (utils/grdcut_wrapper.py).
 # Default ON per Rule 10 carve-out (byte-id to gmt C + 3.3× faster file→file).
@@ -77,8 +85,8 @@ def _grdcut(in_grd: str, out_grd: str, region) -> None:
 #                           of -R<phase_patch.grd> for the no-region branch.
 
 
-def snaphu_unwrap(threshold_snaphu, defomax, region=None):
-    """Single-tile snaphu unwrap. Mirrors gmtsar/csh/snaphu.csh.
+def snaphu_unwrap(threshold_snaphu, defomax, region=None, unwrapper=None):
+    """Single-tile unwrap. Mirrors gmtsar/csh/snaphu.csh.
 
     Args:
         threshold_snaphu : correlation threshold (csh arg $1). Pixels with
@@ -87,28 +95,34 @@ def snaphu_unwrap(threshold_snaphu, defomax, region=None):
         defomax          : maximum phase discontinuity in cycles (csh arg $2).
             0 → continuous-phase unwrap (-s, smooth); >0 → enables phase jumps
             (-d, defomax mode) with DEFOMAX_CYCLE patched into a local
-            snaphu.conf.brief copy.
+            snaphu.conf.brief copy. snaphu backend only — see
+            utils/unwrap_backend.py.
         region           : optional `<rng0>/<rngf>/<azi0>/<azif>` GMT -R region
             (csh arg $3). None → operate on the full grids.
+        unwrapper        : solver backend, `snaphu` (default) or `whirlwind`.
+            None defers to $GMTSAR_UNWRAPPER, then to `snaphu`.
 
     Returns:
         absolute path to the unwrap.grd produced in cwd.
     """
     return _snaphu_run(interp=0, threshold=str(threshold_snaphu),
-                       defomax=str(defomax), region=region)
+                       defomax=str(defomax), region=region,
+                       unwrapper=unwrapper)
 
 
-def snaphu_interp_unwrap(threshold_snaphu, defomax, region=None):
-    """Interpolated snaphu unwrap. Mirrors gmtsar/csh/snaphu_interp.csh.
+def snaphu_interp_unwrap(threshold_snaphu, defomax, region=None,
+                         unwrapper=None):
+    """Interpolated unwrap. Mirrors gmtsar/csh/snaphu_interp.csh.
 
     Same args / return as snaphu_unwrap. Adds a `nearest_grid` step that
-    fills holes in phase_patch.grd before snaphu sees it, and uses the
+    fills holes in phase_patch.grd before the solver sees it, and uses the
     grdinfo-derived increments (not the grid handle) for the no-region
     landmask resample — preserving the one byte-level difference from
     snaphu.csh.
     """
     return _snaphu_run(interp=1, threshold=str(threshold_snaphu),
-                       defomax=str(defomax), region=region)
+                       defomax=str(defomax), region=region,
+                       unwrapper=unwrapper)
 
 
 def _phase_patch_inc():
@@ -125,7 +139,7 @@ def _phase_patch_inc():
     return dx, dy, int(info.get('node_offset', 0))
 
 
-def _snaphu_run(interp, threshold, defomax, region):
+def _snaphu_run(interp, threshold, defomax, region, unwrapper=None):
     """Shared core for snaphu_unwrap / snaphu_interp_unwrap.
 
     The two csh wrappers diverge in exactly three spots:
@@ -234,24 +248,20 @@ def _snaphu_run(interp, threshold, defomax, region):
 
     run('gmt grd2xyz corr_tmp.grd -ZTLf  -do0 > corr.in')
 
-    # --- snaphu ----------------------------------------------------------
+    # --- unwrap ----------------------------------------------------------
+    # The only backend-dependent step. phase.in / corr.in / width in,
+    # unwrap.out / conncomp.out out — see utils/unwrap_backend.py.
     sharedir = resolve_sharedir()
     par_tmp = catch_output_cmd(["gmt", "grdinfo", "-C", "phase_patch.grd"],
                                True, 10, -100000)
 
-    if float(defomax) == 0:
-        run(f'snaphu phase.in {par_tmp} '
-            f'-f {sharedir}/snaphu/config/snaphu.conf.brief '
-            f'-c corr.in -o unwrap.out -v -s -g conncomp.out')
-    else:
-        file_shuttle(f'{sharedir}/snaphu/config/snaphu.conf.brief',
-                     'snaphu.conf.brief', 'cp')
-        replace_strings('snaphu.conf.brief',
-                        'DEFOMAX_CYCLE', f'DEFOMAX_CYCLE {defomax}')
-        run(f'snaphu phase.in {par_tmp} -f snaphu.conf.brief '
-            f'-c corr.in -o unwrap.out -v -d -g conncomp.out')
+    backend = select_backend(unwrapper)
+    run_unwrapper(backend, phase_in='phase.in', corr_in='corr.in',
+                  width=par_tmp, unwrap_out='unwrap.out',
+                  conncomp_out='conncomp.out', defomax=defomax,
+                  sharedir=sharedir)
 
-    # --- snaphu xyz -> grd ----------------------------------------------
+    # --- unwrapped xyz -> grd -------------------------------------------
     par1 = catch_output_cmd(["gmt", "grdinfo", "-I-", "phase_patch.grd"],
                             False, 0, -100000)
     par2 = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
@@ -435,24 +445,25 @@ def snaphu():
     run('gmt grd2xyz corr_tmp.grd -ZTLf  -do0 > corr.in')
     
     print(' ')
-    print('SNAPHU: run snaphu ... ...')
-    
+    print('SNAPHU: run the unwrapper ... ...')
+
     sharedir = resolve_sharedir()
     print(' ')
-    print('SNAPHU: unwrapping phase with snaphu - higher threshold for faster unwrapping ... ...')
-    
+    print('SNAPHU: unwrapping phase - higher threshold for faster unwrapping ... ...')
+
     par_tmp = catch_output_cmd(["gmt","grdinfo","-C","phase_patch.grd"], True, 10, -100000)
     #par_tmp = subprocess.run(["gmt","grdinfo","-C","phase_patch.grd"], stdout=subprocess.PIPE).stdout.decode('utf-8').strip().split()[9]
     print('SNAPHU: output from gmt grdinfo -C phase_patch.grd | cut -f 10 is ', par_tmp)
-    
-    if float(sys.argv[2]) == 0:    
-        run('snaphu phase.in '+par_tmp+' -f '+sharedir+'/snaphu/config/snaphu.conf.brief -c corr.in -o unwrap.out -v -s -g conncomp.out')
-    else:
-        print('SNAPHU: replacing the line containing DEFOMAX_CYCLE to DEFOMAX_CYCLE $2 from snaphu.conf.brief... ...')
-        file_shuttle(sharedir+'/snaphu/config/snaphu.conf.brief','snaphu.conf.brief','cp')
-        replace_strings('snaphu.conf.brief','DEFOMAX_CYCLE','DEFOMAX_CYCLE '+sys.argv[2])
-        run('snaphu phase.in '+par_tmp+' -f snaphu.conf.brief -c corr.in -o unwrap.out -v -d -g conncomp.out')
-    
+
+    # This legacy positional CLI has no slot for a backend argument, so it
+    # takes the $GMTSAR_UNWRAPPER default only (select_backend(None)).
+    backend = select_backend(None)
+    print('SNAPHU: unwrap backend is', backend)
+    run_unwrapper(backend, phase_in='phase.in', corr_in='corr.in',
+                  width=par_tmp, unwrap_out='unwrap.out',
+                  conncomp_out='conncomp.out', defomax=sys.argv[2],
+                  sharedir=sharedir)
+
     print(' ')
     print('SNAPHU: convert to grd ... ...')
     

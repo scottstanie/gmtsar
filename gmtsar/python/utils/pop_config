@@ -93,6 +93,10 @@ threshold_snaphu = 0
 near_interp      = 0
 mask_water       = 1
 defomax          = 0
+# Phase-unwrapping backend: 'snaphu' (default, the bundled C binary) or
+# 'whirlwind' (github.com/scottstanie/whirlwind-insar; MCF, ~10x faster,
+# needs the `whirlwind` binary on PATH). Note `defomax` is snaphu-only.
+unwrapper        = 'snaphu'
 
 # -------- geocode --------
 threshold_geocode = .10
