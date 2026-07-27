@@ -262,7 +262,7 @@ below is tagged with exactly one:
   incl. an end-to-end byte-layout check against the real binary) but **not
   run through the sweep** — per rule 13 this is "ported, not blessed". Note
   this is a *substitution*, not a port: output is not bit-comparable, and
-  `defomax` has no equivalent. Three known behavioural differences and the
+  `defomax` has no equivalent. Five known behavioural differences and the
   validation checklist are in `docs/dev_notes/whirlwind_unwrapper.md`; the
   matching upstream csh change is a patch, not an edit
   (`docs/dev_notes/whirlwind_csh.patch`).

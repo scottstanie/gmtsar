@@ -63,10 +63,19 @@ Known behavioural differences vs snaphu — read before trusting a product
 3. Output is not bit-comparable with snaphu and never will be — these are
    different algorithms. The absolute 2*pi*k offset between connected components
    is undefined in whirlwind, as it is in snaphu.
-4. whirlwind's ``--mask`` takes a TIFF only, so GMTSAR's mask2_patch.grd is not
-   passed. Masking still reaches the solver through corr.in, which the callers
-   have already zeroed below `threshold_snaphu` — whirlwind treats zero
-   coherence as background (verified: masked rows land in component 0).
+4. ``--mask`` is available but deliberately unused, and passing it naively
+   would be a bug. whirlwind takes a flat uint8 mask (nonzero = valid) as well
+   as a TIFF, chosen by extension (whirlwind-cli/src/lib.rs:570). But with no
+   ``--mask`` it derives ``corr > 0`` itself, and an explicit ``--mask``
+   *replaces* that default rather than intersecting with it. GMTSAR has
+   already zeroed corr.in below `threshold_snaphu`, so the implicit mask
+   reproduces the threshold mask for free — while a land-only mask would
+   silently UN-mask every below-threshold pixel.
+   The real gap is the landmask: snaphu.csh multiplies landmask_ra.grd into
+   *phase* only, never into corr, so water pixels reach the solver with a
+   zeroed phase and their original coherence. mask_def.grd is applied to corr
+   and so is already covered. Fixing this needs one byte mask that is the AND
+   of threshold-valid and land-valid — not a second mask file. Not done here.
 5. whirlwind writes NaN at every background pixel (verified: NaN exactly where
    conncomp == 0); snaphu writes a phase value there. Downstream this is
    mostly absorbed, because utils/snaphu.py immediately multiplies by

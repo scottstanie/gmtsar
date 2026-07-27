@@ -124,13 +124,43 @@ Env-only tuning knobs, so `config.py` stays backend-agnostic:
    component rules drop a pixel that passed GMTSAR's threshold — those become
    extra NaNs in `unwrap.grd`. `GMTSAR_WHIRLWIND_ARGS="--conncomp-reliability 0"`
    labels every unwrapped pixel for snaphu-like coverage.
-4. **`--mask` is not used.** It takes a TIFF only, so `mask2_patch.grd` can't
-   be passed as-is. Masking still reaches the solver through `corr.in`, which
-   the callers have already zeroed below `threshold_snaphu`, and whirlwind
-   treats zero coherence as background (verified). Worth revisiting: the
-   whirlwind docs call an explicit mask "critical for large real scenes with
-   water/shadow, where the unmasked path can slow down by 10-100x" — so
-   GMTSAR's landmask may be leaving speed on the table.
+4. **`--mask` is available but deliberately unused — and passing it naively
+   would be a bug.** (Corrected 2026-07-27; the first version of this note
+   said "TIFF only", which is wrong.) whirlwind accepts a flat uint8 mask
+   (nonzero = valid) as well as a TIFF, chosen by extension —
+   `whirlwind-cli/src/lib.rs:570` dispatches to `formats::read_flat_mask`,
+   which takes 1 byte/px or float32. The CLI `--help` text lists only the
+   TIFF dtypes, which is what the wrong claim came from.
+
+   The trap: with **no** `--mask`, whirlwind derives `corr > 0` itself
+   (`lib.rs:576`), and an explicit `--mask` **replaces** that default rather
+   than intersecting with it. GMTSAR has already zeroed `corr.in` below
+   `threshold_snaphu`, so the implicit mask reproduces the threshold mask for
+   free — and a land-only mask would silently *un-mask* every below-threshold
+   pixel.
+
+   | GMTSAR mask | applied to | covered by implicit `corr > 0`? |
+   |---|---|---|
+   | `threshold_snaphu` | `corr_patch.grd` | yes — free |
+   | `mask_def.grd` | `corr_patch.grd` | yes — free |
+   | `landmask_ra.grd` | **`phase_patch.grd` only** | **no** |
+
+   So there *is* something on the table, and it is the landmask specifically:
+   `snaphu.csh:52` multiplies `landmask_ra.grd` into phase and never into
+   corr, so after `grd2xyz -do0` water pixels reach the solver with phase 0
+   and their original coherence — exactly the "NoData treated as real
+   residues" case. The fix is a single byte mask that is the **AND** of
+   threshold-valid and land-valid, written next to `phase.in` and passed as
+   `--mask`. Not implemented here.
+
+   Size of the win is **unquantified**. whirlwind's own help calls an explicit
+   mask "critical ... can slow down by 10-100x", but that figure is not
+   supported by what v0.8.0's default solver does with a mask:
+   `Network::new_with_mask_and_ground` builds over the full grid
+   (`g.num_nodes()`, `g.num_forward`) and then pre-saturates masked arcs via
+   `forbid_masked_arcs` — masked nodes are **not** removed from the graph.
+   The win is bounded by residue suppression, not graph shrinkage. Do not
+   quote 10-100x in a GMTSAR context; measure it.
 5. **Output is not bit-comparable** with snaphu and never will be; these are
    different algorithms. `tests/compare.py`'s py-vs-csh byte-identity check is
    meaningless across backends — a whirlwind sweep needs the SSIM/RMS path
@@ -148,6 +178,11 @@ Env-only tuning knobs, so `config.py` stays backend-agnostic:
       run.
 - [ ] Quantify difference 3 on real data — how many pixels does whirlwind drop
       that GMTSAR's threshold kept?
+- [ ] Export the combined threshold-AND-land byte mask and pass `--mask`
+      (difference 4). Must be the AND — a land-only mask replaces the implicit
+      coherence mask and would be a regression. Measure the actual speed
+      delta on a scene with real water rather than assuming the 10-100x
+      figure from whirlwind's help.
 - [ ] Decide packaging. The binary is a release download, not a build
       dependency; `install.py` does not fetch it, and nothing should default to
       whirlwind until it does.
