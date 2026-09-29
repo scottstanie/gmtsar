@@ -167,6 +167,27 @@ def test_missing_binary_is_fatal_with_install_hint(monkeypatch):
     assert "releases" in str(exc.value)
 
 
+@pytest.mark.parametrize("reported, ok", [
+    ("whirlwind 0.7.0", False),
+    ("whirlwind 0.9.1", False),
+    ("whirlwind 0.10.0", True),
+    ("whirlwind 1.2.3", True),
+    ("something else", False),
+])
+def test_version_floor(monkeypatch, tmp_path, reported, ok):
+    """Rule 1: an old or unrecognisable whirlwind must abort, not run."""
+    fake = tmp_path / "whirlwind"
+    fake.write_text(f"#!/bin/sh\necho '{reported}'\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("GMTSAR_WHIRLWIND_BIN", str(fake))
+    if ok:
+        assert ub.whirlwind_version() == reported
+    else:
+        with pytest.raises(SystemExit) as exc:
+            ub.whirlwind_version()
+        assert ">= 0.10.0" in str(exc.value)
+
+
 # --- 3. end-to-end I/O contract -------------------------------------------
 
 @pytest.mark.skipif(shutil.which("whirlwind") is None,
@@ -211,12 +232,42 @@ def test_end_to_end_output_shapes(tmp_path, sharedir, monkeypatch):
     assert (cc[:20, :] == 0).all()
     assert (cc[20:, :] > 0).any()
 
-    # Difference 5 in the unwrap_backend docstring: whirlwind NaNs the
-    # background, snaphu does not. Pin the exact correspondence, since the
-    # downstream `MUL mask2_patch.grd` only absorbs it where the two masks
-    # agree — a change here means extra NaNs appearing in unwrap.grd.
-    assert np.array_equal(~np.isfinite(unw), cc == 0)
-    assert np.isfinite(unw[cc > 0]).all()
+    # Difference 5 in the unwrap_backend docstring: whirlwind NaNs exactly the
+    # masked (corr == 0) pixels, which `MUL mask2_patch.grd` NaNs downstream
+    # anyway. A NaN anywhere else would be an extra hole in unwrap.grd.
+    assert np.array_equal(~np.isfinite(unw), cor == 0)
+
+
+@pytest.mark.skipif(shutil.which("whirlwind") is None,
+                    reason="whirlwind binary not on PATH")
+def test_unreliable_pixels_keep_their_phase(tmp_path, sharedir, monkeypatch):
+    """A valid but decorrelated pixel gets conncomp 0 and a phase value, as in
+    snaphu. Only corr == 0 pixels come back NaN."""
+    monkeypatch.delenv("GMTSAR_WHIRLWIND_ARGS", raising=False)
+    monkeypatch.delenv("GMTSAR_WHIRLWIND_NLOOKS", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    W, H = 200, 150
+    rng = np.random.default_rng(0)
+    phase = np.angle(np.exp(1j * 0.05 * np.mgrid[0:H, 0:W][1]))
+    cor = np.full((H, W), 0.9, dtype="float32")
+    # Valid but decorrelated: noise phase at coherence 0.03.
+    phase[:, 100:140] = rng.uniform(-np.pi, np.pi, (H, 40))
+    cor[:, 100:140] = 0.03
+    cor[:, 180:] = 0.0  # masked
+    phase.astype("float32").tofile("phase.in")
+    cor.tofile("corr.in")
+
+    ub.run_unwrapper("whirlwind", phase_in="phase.in", corr_in="corr.in",
+                     width=W, unwrap_out="unwrap.out",
+                     conncomp_out="conncomp.out", defomax=0,
+                     sharedir=sharedir)
+    unw = np.fromfile("unwrap.out", dtype="float32").reshape(H, W)
+    cc = np.fromfile("conncomp.out", dtype="uint8").reshape(H, W)
+
+    assert (cc[:, 100:140] == 0).all()
+    assert np.isfinite(unw[:, 100:140]).all()
+    assert np.array_equal(~np.isfinite(unw), cor == 0)
 
 
 @pytest.mark.skipif(shutil.which("whirlwind") is None,

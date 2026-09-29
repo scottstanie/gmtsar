@@ -54,7 +54,7 @@ Per `CLAUDE.md` rule 3, all working code is inside `gmtsar/python/`.
 | `utils/p2p_processing` | reads optional `unwrapper` from `config.py` (via `getattr`, so pre-existing configs keep working); added to the P2P5 stage-cache key so switching backends invalidates a cached sentinel. |
 | `utils/merge_unwrap_geocode_tops` | reads `unwrapper` from config, forwards it (S1 TOPS merge path). |
 | `utils/pop_config` | emits `unwrapper = 'snaphu'` with a comment in generated configs. |
-| `bin_py/tests/test_unwrap_backend.py` | **new.** 22 tests: selection precedence, hard-fail on typos, command construction, and an end-to-end run asserting the byte layouts above. |
+| `bin_py/tests/test_unwrap_backend.py` | **new.** 28 tests: selection precedence, hard-fail on typos, command construction, the minimum-version check, and end-to-end runs asserting the byte layouts above and where NaNs land. |
 | `docs/dev_notes/whirlwind_csh.patch` | the equivalent csh change, as a patch (see below). |
 
 `utils/import_csh_config` was deliberately **not** touched: its job is fidelity
@@ -94,8 +94,10 @@ GMTSAR_UNWRAPPER=whirlwind p2p_processing S1_TOPS master aligned config.py
 An unrecognised name is a **hard error from both sources**, never a fallback to
 snaphu (project rule 1) — a typo'd `whirlwid` would otherwise yield a
 plausible-looking product from the wrong solver. Likewise, a missing
-`whirlwind` binary aborts up front with an install hint rather than failing
-mid-unwrap after the rest of the pipeline has already run.
+`whirlwind` binary, or one older than 0.10.0, aborts up front with an install
+hint rather than failing mid-unwrap after the rest of the pipeline has already
+run. Older releases use a coarser cost table and different connected-component
+defaults.
 
 Env-only tuning knobs, so `config.py` stays backend-agnostic:
 
@@ -117,13 +119,15 @@ Env-only tuning knobs, so `config.py` stays backend-agnostic:
    `ORBITRADIUS`, `BASELINE`, `NEARRANGE`, `DR`/`DA`, `LAMBDA`, `MAXFLOW`,
    `COSTSCALE` — is unused. Reading it from the file rather than hardcoding
    23.8 keeps the two backends off one number.
-3. **whirlwind NaNs the background**, snaphu does not. Verified: NaN lands
-   exactly where `conncomp == 0`. Mostly absorbed downstream, since
-   `utils/snaphu.py` immediately multiplies by `mask2_patch.grd`, which is
-   already NaN below `threshold_snaphu`. **Not** absorbed where whirlwind's own
-   component rules drop a pixel that passed GMTSAR's threshold — those become
-   extra NaNs in `unwrap.grd`. `GMTSAR_WHIRLWIND_ARGS="--conncomp-reliability 0"`
-   labels every unwrapped pixel for snaphu-like coverage.
+3. **whirlwind NaNs masked pixels**, snaphu does not. NaN lands exactly where
+   `corr.in` is 0 (whirlwind's implicit `corr > 0` mask). That is the region
+   `utils/snaphu.py` already NaNs by multiplying with `mask2_patch.grd`, so
+   `unwrap.grd` coverage matches a snaphu run. A valid but unreliable pixel
+   gets `conncomp == 0` and keeps its unwrapped phase, as in snaphu (verified
+   with whirlwind 0.10.0; pinned by `test_unreliable_pixels_keep_their_phase`).
+   `--conncomp-reliability` (default 0.5) changes only the labels, never the
+   phase; `GMTSAR_WHIRLWIND_ARGS="--conncomp-reliability 0"` labels every
+   unwrapped pixel.
 4. **`--mask` is available but deliberately unused — and passing it naively
    would be a bug.** (Corrected 2026-07-27; the first version of this note
    said "TIFF only", which is wrong.) whirlwind accepts a flat uint8 mask
@@ -155,12 +159,12 @@ Env-only tuning knobs, so `config.py` stays backend-agnostic:
 
    Size of the win is **unquantified**. whirlwind's own help calls an explicit
    mask "critical ... can slow down by 10-100x", but that figure is not
-   supported by what v0.8.0's default solver does with a mask:
-   `Network::new_with_mask_and_ground` builds over the full grid
-   (`g.num_nodes()`, `g.num_forward`) and then pre-saturates masked arcs via
-   `forbid_masked_arcs` — masked nodes are **not** removed from the graph.
-   The win is bounded by residue suppression, not graph shrinkage. Do not
-   quote 10-100x in a GMTSAR context; measure it.
+   supported by what the default solver (`unwrap_linear`) does with a mask:
+   it builds the network over the full grid, gives arcs between two masked
+   pixels zero cost instead of removing them, and NaNs masked pixels after
+   integration. Masked nodes stay in the graph, so any win comes from
+   cheaper routing of residues, not a smaller graph. Do not quote 10-100x in
+   a GMTSAR context; measure it.
 5. **Output is not bit-comparable** with snaphu and never will be; these are
    different algorithms. `tests/compare.py`'s py-vs-csh byte-identity check is
    meaningless across backends — a whirlwind sweep needs the SSIM/RMS path
@@ -176,8 +180,6 @@ Env-only tuning knobs, so `config.py` stays backend-agnostic:
       hard-error, or auto-fall-back to snaphu. Current behaviour is the least
       surprising for a mockup but the most surprising for a real deformation
       run.
-- [ ] Quantify difference 3 on real data — how many pixels does whirlwind drop
-      that GMTSAR's threshold kept?
 - [ ] Export the combined threshold-AND-land byte mask and pass `--mask`
       (difference 4). Must be the AND — a land-only mask replaces the implicit
       coherence mask and would be a regression. Measure the actual speed

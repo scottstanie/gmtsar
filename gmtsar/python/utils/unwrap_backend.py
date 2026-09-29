@@ -76,14 +76,17 @@ Known behavioural differences vs snaphu — read before trusting a product
    zeroed phase and their original coherence. mask_def.grd is applied to corr
    and so is already covered. Fixing this needs one byte mask that is the AND
    of threshold-valid and land-valid — not a second mask file. Not done here.
-5. whirlwind writes NaN at every background pixel (verified: NaN exactly where
-   conncomp == 0); snaphu writes a phase value there. Downstream this is
-   mostly absorbed, because utils/snaphu.py immediately multiplies by
-   mask2_patch.grd, which is already NaN below `threshold_snaphu`. It is NOT
-   fully absorbed where whirlwind's own component rules drop a pixel that
-   passed GMTSAR's threshold — those become extra NaNs in unwrap.grd relative
-   to a snaphu run. Pass `GMTSAR_WHIRLWIND_ARGS="--conncomp-reliability 0"`
-   to label every unwrapped pixel and get snaphu-like coverage.
+5. whirlwind writes NaN only at masked pixels, i.e. where corr.in is 0 (the
+   implicit `corr > 0` mask); snaphu writes a phase value there. That is the
+   region utils/snaphu.py already NaNs by multiplying with mask2_patch.grd, so
+   unwrap.grd coverage matches a snaphu run. A valid but unreliable pixel gets
+   conncomp == 0 and still keeps its unwrapped phase, as in snaphu. The
+   conncomp rules (`--conncomp-reliability`, default 0.5) change only the
+   labels, never the phase; `--conncomp-reliability 0` labels every unwrapped
+   pixel.
+
+whirlwind >= 0.10.0 is required (checked by :func:`whirlwind_version`). Older
+releases use a coarser cost table and different connected-component defaults.
 """
 
 import os
@@ -194,16 +197,28 @@ def _run_snaphu(*, phase_in, corr_in, width, unwrap_out, conncomp_out,
 # whirlwind
 # ---------------------------------------------------------------------------
 
+MIN_WHIRLWIND_VERSION = (0, 10, 0)
+
+_INSTALL_HINT = (
+    '  Install a release binary from '
+    'https://github.com/scottstanie/whirlwind-insar/releases\n'
+    '  or see https://github.com/scottstanie/whirlwind-insar#cli-installation\n'
+    '  then put it on PATH or set GMTSAR_WHIRLWIND_BIN=/path/to/whirlwind')
+
+
 def _whirlwind_bin():
     return os.environ.get('GMTSAR_WHIRLWIND_BIN', 'whirlwind')
 
 
 def whirlwind_version():
-    """Return whirlwind's version string, or exit if it isn't runnable.
+    """Return whirlwind's version string, or exit if it isn't usable.
 
     Called up front rather than letting the unwrap itself fail: a missing
     binary halfway through a batch wastes the whole preceding pipeline, and
     the recorded version belongs in the log next to the products it made.
+    A release older than :data:`MIN_WHIRLWIND_VERSION`, or a version string
+    that can't be parsed, is a hard error too (project rule 1): older
+    releases produce different phase and component labels.
     """
     exe = _whirlwind_bin()
     try:
@@ -212,12 +227,15 @@ def whirlwind_version():
     except (OSError, subprocess.CalledProcessError) as exc:
         sys.exit(
             f'UNWRAP: ERROR: unwrapper=whirlwind but {exe!r} is not runnable '
-            f'({exc}).\n'
-            '  Install a release binary from '
-            'https://github.com/scottstanie/whirlwind-insar/releases\n'
-            '  or see https://github.com/scottstanie/whirlwind-insar#cli-installation\n'
-            '  then put it on PATH or set GMTSAR_WHIRLWIND_BIN=/path/to/whirlwind')
-    return out.stdout.decode().strip()
+            f'({exc}).\n' + _INSTALL_HINT)
+    version = out.stdout.decode().strip()
+    m = re.fullmatch(r'whirlwind (\d+)\.(\d+)\.(\d+)\S*', version)
+    minimum = '.'.join(map(str, MIN_WHIRLWIND_VERSION))
+    if m is None or tuple(map(int, m.groups())) < MIN_WHIRLWIND_VERSION:
+        sys.exit(
+            f'UNWRAP: ERROR: {exe!r} reports {version!r}; GMTSAR needs '
+            f'whirlwind >= {minimum}.\n' + _INSTALL_HINT)
+    return version
 
 
 def _ncorrlooks(sharedir):
